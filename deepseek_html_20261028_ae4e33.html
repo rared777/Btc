@@ -1,0 +1,1157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bitcypo — Fund Account (1 BTC)</title>
+<meta name="description" content="Fund your Bitcypo account with 1 BTC via BIP21 payment request. Scan the QR code or open your wallet — the amount is pre-filled.">
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+<!--
+  ============================================================================
+  BITCYPO — FUND + WITHDRAW — SINGLE-FILE EXPRESS APP
+  ----------------------------------------------------------------------------
+  This file IS the server. It is BOTH:
+    • the Express server (Node.js)
+    • the HTML page it serves
+
+  Save it as: fund.js
+  Run it:     node fund.js
+  Open it:    http://localhost:3000/fund.html
+
+  Requirements:
+    - Node.js 18+
+    - npm install express
+
+  You do NOT open this file directly with a browser.
+  If you do, you'll see "Page opened via file://" — that means the browser
+  is reading it as HTML, not running it as Node. The URL bar must say
+  http://localhost:3000/fund.html, not file:///…
+
+  All API endpoints are built in. No other files needed:
+    GET  /api/user/balance   → { btcBalance: "0.50000000" }
+    POST /api/withdraw/btc   → Idempotency-Key + { destination, amountBtc, mfaCode }
+    GET  /fund.html          → serves this page
+    GET  /                   → redirects to /fund.html
+
+  In-memory store — replace with Prisma/Postgres for production.
+  Dev MFA accepts any 6-digit code — replace with TOTP for production.
+  Provider call is stubbed — replace with Fireblocks/BitGo/CDP for production.
+
+  SITE OWNER: replace DEPOSIT_ADDRESS below with your real receiving
+  Bitcoin address.
+  ============================================================================
+-->
+
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" defer></script>
+
+<style>
+:root{
+  --bp-blue:      #0052ff;
+  --bp-blue-2:    #0a8bff;
+  --bp-cyan:      #00c2ff;
+  --bp-navy:      #0a1a35;
+  --bp-muted:     #5b6b85;
+  --bp-line:      #e6ecfa;
+  --bp-bg:        #f5f8ff;
+  --bp-red:       #e5484d;
+  --bp-green:     #16c784;
+  --bp-amber:     #f5a623;
+  --bp-radius:    18px;
+  --bp-shadow:    0 22px 50px rgba(10,26,53,.09);
+  --bp-shadow-sm: 0 10px 26px rgba(10,26,53,.06);
+}
+html{scroll-behavior:smooth;scroll-padding-top:88px}
+body{
+  font-family:'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  color:var(--bp-navy);
+  background:
+    radial-gradient(900px 480px at 85% -10%, rgba(0,163,255,.18), transparent 62%),
+    radial-gradient(700px 400px at 0% 110%, rgba(0,82,255,.12), transparent 60%),
+    #fff;
+  -webkit-font-smoothing:antialiased;
+  min-height:100vh;
+}
+
+.top-nav{background:#fff;border-bottom:1px solid var(--bp-line);padding:.85rem 0}
+.brand-mark{
+  width:40px;height:40px;border-radius:12px;
+  display:grid;place-items:center;color:#fff;font-size:1.2rem;
+  background:linear-gradient(135deg,var(--bp-blue),var(--bp-cyan));
+  box-shadow:0 8px 18px rgba(0,82,255,.3);
+}
+.navbar-brand{font-weight:800;font-size:1.35rem;color:var(--bp-navy);letter-spacing:-.03em;text-decoration:none}
+.navbar-brand:hover{color:var(--bp-navy)}
+.back-link{color:var(--bp-muted);font-weight:600;font-size:.9rem;display:inline-flex;align-items:center;gap:.35rem;transition:.2s;text-decoration:none}
+.back-link:hover{color:var(--bp-blue)}
+
+.fund-page{padding:3rem 0 5rem;min-height:calc(100vh - 74px)}
+@media (max-width:767.98px){.fund-page{padding:2rem 0 3rem}}
+.page-eyebrow{
+  display:inline-flex;align-items:center;gap:.5rem;
+  font-size:.75rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--bp-blue);background:rgba(0,82,255,.08);
+  padding:.45rem .95rem;border-radius:100px;
+}
+.page-title{font-size:clamp(1.8rem,3.5vw,2.6rem);font-weight:800;letter-spacing:-.02em;line-height:1.15;margin:.6rem 0 .5rem}
+.page-subtitle{color:var(--bp-muted);font-size:1.02rem;line-height:1.75;max-width:620px;margin:0 auto 2.5rem}
+
+.fund-shell{background:#fff;border:1px solid var(--bp-line);border-radius:26px;box-shadow:var(--bp-shadow);overflow:hidden;max-width:920px;margin:0 auto}
+.fund-shell-body{display:grid;grid-template-columns:1.05fr 1fr}
+@media (max-width:767.98px){.fund-shell-body{grid-template-columns:1fr}}
+
+.fund-pay{padding:2.5rem 2rem;border-right:1px solid var(--bp-line)}
+@media (max-width:767.98px){.fund-pay{border-right:0;border-bottom:1px solid var(--bp-line)}}
+.fund-amount-label{font-size:.72rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--bp-muted);display:block;margin-bottom:.4rem}
+.fund-amount{font-size:3rem;font-weight:800;color:var(--bp-navy);letter-spacing:-.03em;line-height:1;display:flex;align-items:baseline;gap:.5rem;margin-bottom:.35rem}
+.fund-amount .unit{font-size:1.05rem;font-weight:700;color:var(--bp-muted)}
+.fund-fiat{font-size:.88rem;color:var(--bp-muted);margin-bottom:1.75rem;min-height:1.2em}
+.fund-qr-wrap{display:flex;justify-content:center;margin-bottom:1.5rem}
+.fund-qr{background:#fff;padding:16px;border-radius:20px;border:1px solid var(--bp-line);box-shadow:0 8px 20px rgba(10,26,53,.06);line-height:0}
+.fund-qr canvas{display:block;border-radius:8px}
+.fund-address-label{font-size:.72rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--bp-muted);display:block;margin-bottom:.4rem}
+.fund-address-box{display:flex;align-items:center;gap:.5rem;background:var(--bp-bg);border:1px solid var(--bp-line);border-radius:12px;padding:.7rem .85rem;margin-bottom:1.25rem}
+.fund-address{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem;color:var(--bp-navy);word-break:break-all;flex:1;min-width:0}
+.fund-copy{border:1.5px solid var(--bp-line);background:#fff;color:var(--bp-navy);border-radius:8px;padding:.4rem .7rem;font-size:.8rem;font-weight:700;cursor:pointer;transition:.2s;flex:none}
+.fund-copy:hover{border-color:var(--bp-blue);color:var(--bp-blue)}
+.fund-copy.copied{border-color:var(--bp-green);color:var(--bp-green)}
+.fund-wallet-btn{display:flex;align-items:center;justify-content:center;gap:.5rem;width:100%;border:0;border-radius:12px;background:linear-gradient(135deg,var(--bp-blue),var(--bp-blue-2));color:#fff;font-weight:700;font-size:.95rem;padding:.9rem 1rem;box-shadow:0 12px 26px rgba(0,82,255,.28);transition:transform .2s, box-shadow .2s;text-decoration:none}
+.fund-wallet-btn:hover{color:#fff;transform:translateY(-2px);box-shadow:0 18px 34px rgba(0,82,255,.36)}
+.fund-wallet-btn[aria-disabled="true"]{opacity:.5;pointer-events:none;transform:none;box-shadow:none}
+
+.fund-secondary-actions{margin-top:1rem;display:flex;flex-direction:column;gap:.5rem}
+.fund-withdraw-btn{display:flex;align-items:center;justify-content:center;gap:.5rem;width:100%;border:1.5px solid var(--bp-blue);border-radius:12px;background:#fff;color:var(--bp-blue);font-weight:700;font-size:.92rem;padding:.85rem 1rem;cursor:pointer;transition:.2s}
+.fund-withdraw-btn:hover{background:rgba(0,82,255,.06)}
+.fund-withdraw-hint{font-size:.76rem;color:var(--bp-muted);text-align:center;margin:0;line-height:1.45}
+
+.fund-status{padding:2.5rem 2rem;background:linear-gradient(180deg, #fbfcff 0%, #f5f8ff 100%);display:flex;flex-direction:column}
+.fund-status-head{display:flex;align-items:center;gap:.75rem;margin-bottom:1.25rem}
+.status-badge{display:inline-flex;align-items:center;gap:.4rem;font-size:.7rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase;padding:.4rem .8rem;border-radius:100px;background:rgba(91,107,133,.12);color:var(--bp-muted);transition:.3s}
+.status-badge.pending{background:rgba(245,166,35,.15);color:#b87800}
+.status-badge.success{background:rgba(22,199,132,.15);color:#0f9b66}
+.status-badge.error{background:rgba(229,72,77,.15);color:#a3282c}
+.status-title{font-size:1.15rem;font-weight:800;color:var(--bp-navy);margin:0;letter-spacing:-.01em}
+.status-sub{font-size:.85rem;color:var(--bp-muted);line-height:1.55;margin:0 0 1.5rem}
+
+.progress-wrap{height:10px;background:#e6ecfa;border-radius:100px;overflow:hidden;margin-bottom:.75rem}
+.progress-bar{height:100%;width:0;background:linear-gradient(90deg,var(--bp-cyan),var(--bp-blue-2));border-radius:100px;transition:width .8s cubic-bezier(.4,0,.2,1)}
+.is-funded .progress-bar{background:linear-gradient(90deg,#16c784,#43e8aa)}
+.progress-amounts{display:flex;justify-content:space-between;align-items:baseline;font-size:.78rem;font-weight:700;color:var(--bp-muted);margin-bottom:1.75rem}
+.progress-amounts .confirmed{color:var(--bp-navy);font-family:ui-monospace,monospace}
+.progress-amounts .required{font-family:ui-monospace,monospace}
+
+.steps{list-style:none;padding:0;margin:0 0 1.5rem}
+.step{display:flex;gap:.75rem;align-items:flex-start;padding:.65rem 0;border-bottom:1px solid rgba(230,236,250,.7)}
+.step:last-child{border-bottom:0}
+.step-icon{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;flex:none;font-size:.8rem;font-weight:800;background:#e6ecfa;color:var(--bp-muted);transition:.3s}
+.step.done .step-icon{background:rgba(22,199,132,.15);color:var(--bp-green)}
+.step.active .step-icon{background:rgba(0,82,255,.12);color:var(--bp-blue)}
+.step-body{flex:1;min-width:0}
+.step-title{font-size:.85rem;font-weight:700;color:var(--bp-navy);margin:0 0 .15rem;line-height:1.3}
+.step-sub{font-size:.76rem;color:var(--bp-muted);margin:0;line-height:1.4}
+
+.conf-row{display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:.7rem .9rem;background:#fff;border:1px solid var(--bp-line);border-radius:10px;font-size:.82rem;margin-bottom:1rem}
+.conf-row .label{display:inline-flex;align-items:center;gap:.4rem;color:var(--bp-muted);font-weight:600}
+.conf-row .label i{color:var(--bp-cyan)}
+.conf-row .value{font-family:ui-monospace,monospace;font-weight:800;color:var(--bp-navy)}
+
+.status-actions{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:auto;padding-top:1rem}
+.btn-secondary-soft{background:#fff;border:1.5px solid var(--bp-line);color:var(--bp-navy);border-radius:10px;padding:.65rem 1.1rem;font-weight:700;font-size:.85rem;cursor:pointer;transition:.2s}
+.btn-secondary-soft:hover{background:var(--bp-bg);border-color:var(--bp-muted)}
+.btn-secondary-soft:disabled{opacity:.55;cursor:not-allowed}
+
+.status-error{display:none;background:rgba(229,72,77,.06);border:1px solid rgba(229,72,77,.25);color:#a3282c;border-radius:10px;padding:.7rem .85rem;font-size:.82rem;margin-bottom:1rem}
+.status-error.show{display:block}
+
+.page-foot{text-align:center;padding:2rem 1rem 1rem;color:var(--bp-muted);font-size:.78rem}
+.page-foot a{color:var(--bp-blue);font-weight:600;text-decoration:none}
+.page-foot a:hover{text-decoration:underline}
+.page-foot .pill{display:inline-flex;align-items:center;gap:.35rem;background:rgba(22,199,132,.1);color:#0f9b66;font-weight:700;padding:.35rem .75rem;border-radius:100px;margin-bottom:.85rem}
+
+.wd-backdrop{position:fixed;inset:0;z-index:1090;background:rgba(10,26,53,.55);display:flex;align-items:center;justify-content:center;padding:1rem;opacity:0;visibility:hidden;transition:opacity .2s ease, visibility .2s ease}
+.wd-backdrop.show{opacity:1;visibility:visible}
+.wd-modal{background:#fff;border-radius:24px;width:100%;max-width:480px;max-height:calc(100vh - 2rem);overflow-y:auto;padding:1.75rem;box-shadow:0 30px 80px rgba(10,26,53,.35);transform:translateY(12px);transition:transform .2s ease}
+.wd-backdrop.show .wd-modal{transform:none}
+.wd-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.1rem}
+.wd-title{font-size:1.25rem;font-weight:800;margin:0;color:var(--bp-navy)}
+.wd-close{border:0;background:transparent;color:var(--bp-muted);font-size:1.35rem;line-height:1;padding:.2rem .5rem;cursor:pointer;border-radius:8px;transition:.2s}
+.wd-close:hover{background:var(--bp-bg);color:var(--bp-navy)}
+.wd-close:disabled{opacity:.4;cursor:not-allowed}
+.wd-balance{background:var(--bp-bg);border:1px solid var(--bp-line);border-radius:12px;padding:.65rem .85rem;margin-bottom:1.25rem;font-size:.86rem;color:var(--bp-muted);display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.wd-balance strong{color:var(--bp-navy);font-weight:800}
+.wd-balance.error{background:rgba(229,72,77,.06);border-color:rgba(229,72,77,.25);color:#a3282c}
+.wd-balance .wd-retry{border:1.5px solid var(--bp-blue);color:var(--bp-blue);background:transparent;border-radius:8px;padding:.2rem .6rem;font-size:.78rem;font-weight:700;cursor:pointer;transition:.2s}
+.wd-balance .wd-retry:hover{background:var(--bp-blue);color:#fff}
+.wd-field{margin-bottom:1rem}
+.wd-field label{display:block;font-size:.82rem;font-weight:700;color:var(--bp-navy);margin-bottom:.35rem}
+.wd-input{width:100%;border:1.5px solid var(--bp-line);border-radius:12px;padding:.7rem .9rem;font-size:.92rem;color:var(--bp-navy);background:#fff;transition:border-color .2s, box-shadow .2s}
+.wd-input:focus{outline:none;border-color:var(--bp-blue);box-shadow:0 0 0 .22rem rgba(0,82,255,.12)}
+.wd-input.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem}
+.wd-input.is-invalid{border-color:var(--bp-red);box-shadow:0 0 0 .22rem rgba(229,72,77,.12)}
+.wd-input.is-valid{border-color:var(--bp-green)}
+.wd-hint{font-size:.76rem;color:var(--bp-muted);margin-top:.35rem;min-height:1.1em;line-height:1.4}
+.wd-hint.error{color:var(--bp-red);font-weight:600}
+.wd-hint.ok{color:var(--bp-green);font-weight:600}
+.wd-alert{background:rgba(229,72,77,.08);border:1px solid rgba(229,72,77,.25);color:#a3282c;border-radius:10px;padding:.7rem .85rem;font-size:.84rem;margin-bottom:1rem}
+.wd-alert:empty{display:none}
+.wd-footer{display:flex;gap:.5rem;justify-content:flex-end;margin-top:1.25rem}
+.btn-brand{background:linear-gradient(135deg,var(--bp-blue),var(--bp-blue-2));color:#fff;border:0;border-radius:12px;padding:.85rem 1.7rem;font-weight:700;box-shadow:0 12px 26px rgba(0,82,255,.28);cursor:pointer;transition:transform .25s ease, box-shadow .25s ease}
+.btn-brand:hover{transform:translateY(-3px);box-shadow:0 18px 34px rgba(0,82,255,.36)}
+.btn-brand:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
+.btn-outline-brand{border:1.5px solid var(--bp-blue);color:var(--bp-blue);background:#fff;border-radius:12px;padding:.8rem 1.6rem;font-weight:700;cursor:pointer;transition:.25s}
+.btn-outline-brand:hover{background:var(--bp-blue);color:#fff}
+.btn-outline-brand:disabled{opacity:.55;cursor:not-allowed}
+.wd-footer .btn-outline-brand,.wd-footer .btn-brand{padding:.65rem 1.25rem;font-size:.9rem}
+.wd-idem{font-size:.72rem;color:var(--bp-muted);margin-top:1rem;margin-bottom:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.wd-idem code{background:var(--bp-bg);padding:.1rem .4rem;border-radius:4px;color:var(--bp-navy)}
+.wd-success{text-align:center;padding:.5rem 0}
+.wd-success .bi-check-circle-fill{color:var(--bp-green);font-size:2.8rem}
+.wd-success h3{font-size:1.2rem;margin:.6rem 0 .25rem}
+.wd-success .wd-summary{background:var(--bp-bg);border-radius:12px;padding:.85rem;margin:1rem 0;text-align:left;font-size:.85rem}
+.wd-success .wd-summary div{display:flex;justify-content:space-between;gap:1rem;padding:.25rem 0}
+.wd-success .wd-summary span:first-child{color:var(--bp-muted)}
+.wd-success .wd-summary span:last-child{font-family:ui-monospace,monospace;font-size:.8rem;color:var(--bp-navy);text-align:right;word-break:break-all}
+.wd-success .wd-replay{background:rgba(0,194,255,.1);border:1px solid rgba(0,194,255,.3);color:#0a7bb8;font-size:.78rem;padding:.5rem .75rem;border-radius:8px;margin-bottom:.75rem}
+
+/* If opened via file://, show a big banner explaining the fix */
+.file-warning{display:none;position:fixed;inset:0;z-index:9999;background:#0a1a35;color:#fff;padding:2rem;overflow:auto;align-items:center;justify-content:center;text-align:center}
+.file-warning.show{display:flex}
+.file-warning .card{max-width:640px;background:#fff;color:#0a1a35;border-radius:20px;padding:2.5rem 2rem;box-shadow:0 30px 80px rgba(0,0,0,.4)}
+.file-warning .badge{display:inline-block;background:#fee;color:#a3282c;font-weight:800;font-size:.75rem;letter-spacing:.1em;text-transform:uppercase;padding:.4rem .8rem;border-radius:100px;margin-bottom:1rem}
+.file-warning h1{font-size:1.8rem;font-weight:800;margin:0 0 .75rem}
+.file-warning p{color:#5b6b85;line-height:1.7;margin:0 0 1rem;font-size:.95rem}
+.file-warning code{display:block;background:#0a1a35;color:#43e8aa;padding:1rem;border-radius:10px;font-family:ui-monospace,monospace;font-size:.85rem;text-align:left;white-space:pre-wrap;margin:.75rem 0}
+.file-warning .step{text-align:left;margin-bottom:1.25rem}
+.file-warning .step strong{display:block;color:#0052ff;font-size:.75rem;letter-spacing:.1em;text-transform:uppercase;margin-bottom:.35rem}
+</style>
+</head>
+<body>
+
+<!-- File:// guard — shown automatically if the user opens this file directly -->
+<div class="file-warning" id="fileWarning">
+  <div class="card">
+    <span class="badge">Wrong way to open this file</span>
+    <h1>This file is a Node.js server</h1>
+    <p>
+      You opened it as an HTML page (<code style="display:inline;background:transparent;color:#a3282c;padding:0;font-size:inherit">file://</code>).
+      It's supposed to be <strong>run</strong>, not opened — the browser can't
+      make network calls from <code style="display:inline;background:transparent;color:#a3282c;padding:0;font-size:inherit">file://</code> URLs.
+    </p>
+
+    <div class="step">
+      <strong>Step 1</strong>
+      <p>Open a terminal (Command Prompt / Terminal).</p>
+    </div>
+
+    <div class="step">
+      <strong>Step 2</strong>
+      <p>Install Express once:</p>
+      <code>npm install express</code>
+    </div>
+
+    <div class="step">
+      <strong>Step 3</strong>
+      <p>Run this file as a Node.js server:</p>
+      <code>node fund.js</code>
+    </div>
+
+    <div class="step">
+      <strong>Step 4</strong>
+      <p>Open this URL in your browser — the correct URL, not <code style="display:inline;background:transparent;color:#a3282c;padding:0;font-size:inherit">file://</code>:</p>
+      <code>http://localhost:3000/fund.html</code>
+    </div>
+
+    <p style="margin-top:1.5rem;font-size:.82rem;color:#8a97ad">
+      If you meant to test the deposit panel only, you can also run
+      <code style="display:inline;background:#f5f8ff;color:#0052ff;padding:.1rem .4rem;font-size:.8rem">python -m http.server 8000</code>
+      in the same folder and open <code style="display:inline;background:#f5f8ff;color:#0052ff;padding:.1rem .4rem;font-size:.8rem">http://localhost:8000/fund.js</code>
+      — but the withdraw flow needs the Express server.
+    </p>
+  </div>
+</div>
+
+<!-- ==================== MAIN PAGE ==================== -->
+<div id="app" style="display:none">
+
+<div class="top-nav">
+  <div class="container d-flex justify-content-between align-items-center">
+    <a class="navbar-brand d-flex align-items-center gap-2" href="#">
+      <span class="brand-mark"><i class="bi bi-currency-bitcoin"></i></span>
+      Bitcypo
+    </a>
+    <a class="back-link" href="/">
+      <i class="bi bi-arrow-left"></i> Back to dashboard
+    </a>
+  </div>
+</div>
+
+<main class="fund-page">
+  <div class="container">
+
+    <div class="text-center">
+      <span class="page-eyebrow"><i class="bi bi-wallet2"></i> Fund &amp; withdraw</span>
+      <h1 class="page-title">Deposit <span id="pageTitleBtc">1.00000000 BTC</span></h1>
+      <p class="page-subtitle">
+        Fund your account with 1 BTC or withdraw any amount you have available.
+        The withdraw flow uses your current balance — no deposit required.
+      </p>
+    </div>
+
+    <div class="fund-shell">
+      <div class="fund-shell-body" id="fundShell">
+
+        <div class="fund-pay">
+          <span class="fund-amount-label">Amount due</span>
+          <div class="fund-amount">
+            <span id="amountBtc">1.00000000</span>
+            <span class="unit">BTC</span>
+          </div>
+          <div class="fund-fiat" id="amountFiat">
+            <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+            Fetching live BTC price…
+          </div>
+
+          <div class="fund-qr-wrap">
+            <div class="fund-qr">
+              <canvas id="fundQrCanvas" width="240" height="240"
+                      aria-label="BIP21 QR code for 1 BTC payment"></canvas>
+            </div>
+          </div>
+
+          <span class="fund-address-label">Deposit address</span>
+          <div class="fund-address-box">
+            <span class="fund-address" id="depositAddress">—</span>
+            <button type="button" class="fund-copy" id="copyAddressBtn" aria-label="Copy deposit address">
+              <i class="bi bi-clipboard"></i> Copy
+            </button>
+          </div>
+
+          <a id="openWalletBtn" class="fund-wallet-btn" href="#" aria-disabled="true">
+            <i class="bi bi-box-arrow-up-right"></i> Open wallet &amp; pay 1 BTC
+          </a>
+
+          <div class="fund-secondary-actions">
+            <button type="button" class="fund-withdraw-btn" id="openWithdrawBtn">
+              <i class="bi bi-arrow-up-right-circle"></i> Withdraw BTC
+            </button>
+            <p class="fund-withdraw-hint" id="withdrawHint">
+              Withdraw any amount you have available — no deposit required.
+            </p>
+          </div>
+        </div>
+
+        <div class="fund-status" id="fundStatusPane">
+          <div class="fund-status-head">
+            <span class="status-badge" id="statusBadge">
+              <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+              Checking
+            </span>
+            <h2 class="status-title" id="statusTitle">Waiting for deposit</h2>
+          </div>
+          <p class="status-sub" id="statusSub">
+            We are monitoring the deposit address on-chain. This page updates
+            automatically every 20 seconds.
+          </p>
+
+          <div class="status-error" id="statusError" role="alert"></div>
+
+          <div class="progress-wrap">
+            <div class="progress-bar" id="progressBar"></div>
+          </div>
+          <div class="progress-amounts">
+            <span>Confirmed: <span class="confirmed" id="confirmedSats">0</span> sats</span>
+            <span>Required: <span class="required" id="requiredSats">100000000</span> sats</span>
+          </div>
+
+          <ul class="steps" id="stepsList">
+            <li class="step active" data-step="1">
+              <span class="step-icon">1</span>
+              <div class="step-body">
+                <p class="step-title">Send 1 BTC to the address</p>
+                <p class="step-sub">Any wallet — SegWit (bc1…) is cheapest.</p>
+              </div>
+            </li>
+            <li class="step" data-step="2">
+              <span class="step-icon">2</span>
+              <div class="step-body">
+                <p class="step-title">Wait for confirmations</p>
+                <p class="step-sub">3 blocks on mainnet, usually ~30 minutes.</p>
+              </div>
+            </li>
+            <li class="step" data-step="3">
+              <span class="step-icon">3</span>
+              <div class="step-body">
+                <p class="step-title">Account is funded</p>
+                <p class="step-sub">Deposit reflected in your internal balance.</p>
+              </div>
+            </li>
+          </ul>
+
+          <div class="conf-row">
+            <span class="label"><i class="bi bi-box"></i> Confirmations</span>
+            <span class="value" id="confsValue">— / 3</span>
+          </div>
+
+          <div class="conf-row">
+            <span class="label"><i class="bi bi-clock"></i> Last checked</span>
+            <span class="value" id="lastChecked">—</span>
+          </div>
+
+          <div class="status-actions">
+            <button type="button" class="btn-secondary-soft" id="refreshBtn">
+              <i class="bi bi-arrow-clockwise"></i> Refresh now
+            </button>
+            <button type="button" class="btn-secondary-soft" id="viewExplorerBtn">
+              <i class="bi bi-box-arrow-up-right"></i> View on explorer
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="page-foot">
+      <div class="pill"><i class="bi bi-shield-check"></i> On-chain deposit check via mempool.space</div>
+      <div>
+        The deposit panel watches the address above. The withdraw button
+        uses your current account balance — it works with funds from any source.
+        <br>
+        <a href="https://mempool.space" target="_blank" rel="noopener">mempool.space</a>
+        · Bitcoin block explorer · No account required.
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<!-- ==================== WITHDRAW MODAL ==================== -->
+<div class="wd-backdrop" id="wdModal" aria-hidden="true">
+  <div class="wd-modal" role="dialog" aria-modal="true" aria-labelledby="wdTitle">
+
+    <div class="wd-success" id="wdSuccess" hidden>
+      <i class="bi bi-check-circle-fill"></i>
+      <h3>Withdrawal submitted</h3>
+      <p style="font-size:.88rem;color:var(--bp-muted);margin:0;">
+        Your transaction has been accepted by the wallet provider and is being
+        broadcast to the Bitcoin network.
+      </p>
+      <div class="wd-summary">
+        <div><span>Withdrawal ID</span><span id="wdSuccessId">—</span></div>
+        <div><span>Amount</span><span id="wdSuccessAmount">— BTC</span></div>
+        <div><span>Network fee</span><span id="wdSuccessFee">—</span></div>
+        <div><span>Provider tx</span><span id="wdSuccessTx">—</span></div>
+      </div>
+      <div class="wd-replay" id="wdSuccessReplay" hidden>
+        <i class="bi bi-info-circle"></i> This was a replay of an existing
+        withdrawal — no duplicate was created.
+      </div>
+      <button type="button" class="btn-brand" id="wdDone">Done</button>
+    </div>
+
+    <div id="wdForm">
+      <div class="wd-header">
+        <h3 class="wd-title" id="wdTitle">Withdraw BTC</h3>
+        <button type="button" class="wd-close" id="wdClose" aria-label="Close">
+          <i class="bi bi-x-lg"></i>
+        </button>
+      </div>
+
+      <div class="wd-balance" id="wdBalanceWrap" aria-live="polite">
+        Available: <strong id="wdBalance">— BTC</strong>
+      </div>
+
+      <div class="wd-field">
+        <label for="wdAddress">Destination address</label>
+        <input type="text" class="wd-input mono" id="wdAddress"
+               placeholder="bc1q… / 1… / 3…"
+               autocomplete="off" spellcheck="false">
+        <div class="wd-hint" id="wdAddressHint">
+          SegWit (bc1…) is recommended — lower fees.
+        </div>
+      </div>
+
+      <div class="wd-field">
+        <label for="wdAmount">Amount (BTC)</label>
+        <input type="text" class="wd-input" id="wdAmount"
+               inputmode="decimal" placeholder="0.00000000"
+               autocomplete="off">
+        <div class="wd-hint" id="wdAmountHint">Up to 8 decimal places.</div>
+      </div>
+
+      <div class="wd-field">
+        <label for="wdMfa">MFA code</label>
+        <input type="text" class="wd-input" id="wdMfa"
+               inputmode="numeric" maxlength="6" placeholder="6-digit code"
+               autocomplete="one-time-code">
+        <div class="wd-hint" id="wdMfaHint">
+          Enter the 6-digit code from your authenticator app.
+        </div>
+      </div>
+
+      <div class="wd-alert" id="wdError" role="alert"></div>
+
+      <div class="wd-footer">
+        <button type="button" class="btn-outline-brand" id="wdCancel">Cancel</button>
+        <button type="button" class="btn-brand" id="wdSubmit" disabled>
+          Confirm withdrawal
+        </button>
+      </div>
+
+      <p class="wd-idem">
+        Idempotency key: <code id="wdIdem">—</code>
+        <br>
+        A retry of this submission cannot send funds twice.
+      </p>
+    </div>
+  </div>
+</div>
+
+</div><!-- /#app -->
+
+<!-- ============================================================
+     Address validator (loaded as ESM)
+     ============================================================ -->
+<script type="module">
+  try {
+    const mod = await import('https://esm.sh/bitcoin-address-validation@3.0.0');
+    window.BTCValidate = (a) => { try { return mod.validate(a); } catch { return false; } };
+  } catch {
+    window.BTCValidate = (a) => !!a && (/^(bc1|tb1)[0-9a-z]{11,87}$/i.test(a) || /^[13mn2][1-9A-HJ-NP-Za-km-z]{25,34}$/.test(a));
+  }
+</script>
+
+<!-- ============================================================
+     File:// detection — show the warning banner if opened as a file
+     ============================================================ -->
+<script>
+(function () {
+  const isFile = location.protocol === 'file:';
+  const warning = document.getElementById('fileWarning');
+  const app = document.getElementById('app');
+
+  if (isFile) {
+    warning.classList.add('show');
+    return;                       // don't run the rest of the app
+  }
+
+  // Served over http/https — hide the warning, show the app
+  warning.classList.remove('show');
+  app.style.display = 'block';
+})();
+</script>
+
+<!-- ============================================================
+     FUNDING CONTROLLER — informational only
+     ============================================================ -->
+<script>
+(function () {
+  'use strict';
+  if (location.protocol === 'file:') return;   // page not running
+
+  const DEPOSIT_ADDRESS   = 'REPLACE_WITH_YOUR_ADDRESS';
+  const REQUIRED_SATS     = 100000000n;
+  const MIN_CONFIRMATIONS = 3;
+  const POLL_MS           = 20000;
+  const MEMPOOL_MAIN      = 'https://mempool.space/api';
+  const COINGECKO_PRICE   = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd';
+
+  const el = {
+    amountFiat:   document.getElementById('amountFiat'),
+    qrCanvas:     document.getElementById('fundQrCanvas'),
+    addressOut:   document.getElementById('depositAddress'),
+    copyBtn:      document.getElementById('copyAddressBtn'),
+    walletBtn:    document.getElementById('openWalletBtn'),
+    statusPane:   document.getElementById('fundStatusPane'),
+    badge:        document.getElementById('statusBadge'),
+    title:        document.getElementById('statusTitle'),
+    sub:          document.getElementById('statusSub'),
+    error:        document.getElementById('statusError'),
+    progressBar:  document.getElementById('progressBar'),
+    confirmedOut: document.getElementById('confirmedSats'),
+    requiredOut:  document.getElementById('requiredSats'),
+    confsValue:   document.getElementById('confsValue'),
+    lastChecked:  document.getElementById('lastChecked'),
+    refreshBtn:   document.getElementById('refreshBtn'),
+    explorerBtn:  document.getElementById('viewExplorerBtn'),
+    steps:        document.querySelectorAll('#stepsList .step'),
+    pageTitleBtc: document.getElementById('pageTitleBtc'),
+    withdrawHint: document.getElementById('withdrawHint'),
+  };
+
+  const state = {
+    confirmedSats: 0n,
+    pendingSats:   0n,
+    confs:         0,
+    isPolling:     false,
+  };
+
+  function satsToBtcString(sats) {
+    if (sats < 0n) sats = 0n;
+    const whole = sats / 100000000n;
+    const frac  = (sats % 100000000n).toString().padStart(8, '0');
+    return `${whole}.${frac}`;
+  }
+  function progressPct(confirmed, required) {
+    if (required <= 0n) return 100;
+    const scaled = (confirmed * 10000n) / required;
+    return Math.max(0, Math.min(100, Number(scaled) / 100));
+  }
+
+  const bip21Uri = `bitcoin:${DEPOSIT_ADDRESS}?amount=1&label=Bitcypo%20Deposit`;
+  el.addressOut.textContent = DEPOSIT_ADDRESS;
+  el.walletBtn.href = bip21Uri;
+  el.walletBtn.removeAttribute('aria-disabled');
+
+  if (window.QRCode) {
+    QRCode.toCanvas(el.qrCanvas, bip21Uri, {
+      width: 240, margin: 2,
+      color: { dark: '#0a1a35', light: '#ffffff' },
+      errorCorrectionLevel: 'M',
+    }, (err) => { if (err) console.error('QR render failed:', err); });
+  }
+
+  el.copyBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(DEPOSIT_ADDRESS);
+      el.copyBtn.classList.add('copied');
+      el.copyBtn.innerHTML = '<i class="bi bi-check2"></i> Copied';
+      setTimeout(() => {
+        el.copyBtn.classList.remove('copied');
+        el.copyBtn.innerHTML = '<i class="bi bi-clipboard"></i> Copy';
+      }, 1800);
+    } catch {}
+  });
+
+  async function loadFiatPrice() {
+    try {
+      const res = await fetch(COINGECKO_PRICE, {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const price = Number(data?.bitcoin?.usd);
+      if (!Number.isFinite(price) || price <= 0) throw new Error('Bad price');
+      el.amountFiat.innerHTML = `≈ ${price.toLocaleString('en-US', { style: 'currency', currency: 'USD' })} <span style="opacity:.7;">(live BTC price)</span>`;
+    } catch {
+      el.amountFiat.textContent = '≈ USD price unavailable';
+    }
+  }
+  loadFiatPrice();
+  setInterval(() => { if (document.visibilityState === 'visible') loadFiatPrice(); }, 60000);
+
+  async function fetchAddressData() {
+    const res = await fetch(`${MEMPOOL_MAIN}/address/${DEPOSIT_ADDRESS}`, {
+      headers: { 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (res.status === 404) return { empty: true };
+    if (res.status === 429) throw new Error('rate_limited');
+    if (res.status >= 500) throw new Error('upstream');
+    if (!res.ok) throw new Error(`http_${res.status}`);
+    return { empty: false, data: await res.json() };
+  }
+  async function fetchTipHeight() {
+    try {
+      const res = await fetch(`${MEMPOOL_MAIN}/blocks/tip/height`, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return null;
+      return Number(await res.text());
+    } catch { return null; }
+  }
+  async function fetchDepositTxs() {
+    try {
+      const res = await fetch(`${MEMPOOL_MAIN}/address/${DEPOSIT_ADDRESS}/txs`, { signal: AbortSignal.timeout(10000) });
+      if (!res.ok) return [];
+      const txs = await res.json();
+      const deposits = [];
+      for (const tx of (txs || [])) {
+        const received = (tx.vout || [])
+          .filter(v => v.scriptpubkey_address === DEPOSIT_ADDRESS)
+          .reduce((s, v) => s + BigInt(v.value || 0), 0n);
+        const sent = (tx.vin || [])
+          .filter(v => v.prevout && v.prevout.scriptpubkey_address === DEPOSIT_ADDRESS)
+          .reduce((s, v) => s + BigInt(v.prevout.value || 0), 0n);
+        const net = received - sent;
+        if (net <= 0n) continue;
+        deposits.push({
+          txid: tx.txid, netSats: net,
+          blockHeight: tx.status && tx.status.block_height || null,
+          confirmed: !!(tx.status && tx.status.confirmed),
+        });
+      }
+      return deposits;
+    } catch { return []; }
+  }
+
+  async function evaluate() {
+    if (state.isPolling) return;
+    state.isPolling = true;
+    el.refreshBtn.disabled = true;
+
+    try {
+      const [addrRes, tipHeight] = await Promise.all([fetchAddressData(), fetchTipHeight()]);
+      let confirmedSats = 0n, pendingSats = 0n, confs = 0;
+
+      if (!addrRes.empty) {
+        const d = addrRes.data;
+        confirmedSats = BigInt(d.chain_stats.funded_txo_sum) - BigInt(d.chain_stats.spent_txo_sum);
+        pendingSats   = BigInt(d.mempool_stats.funded_txo_sum) - BigInt(d.mempool_stats.spent_txo_sum);
+
+        const deposits = await fetchDepositTxs();
+        let confirmedByTx = 0n, maxConfs = 0;
+        for (const dep of deposits) {
+          const c = (dep.confirmed && tipHeight && dep.blockHeight)
+            ? (tipHeight - dep.blockHeight + 1) : 0;
+          if (c > maxConfs) maxConfs = c;
+          if (c >= MIN_CONFIRMATIONS) confirmedByTx += dep.netSats;
+        }
+        confs = maxConfs;
+        if (confirmedByTx > 0n && confirmedByTx < confirmedSats) confirmedSats = confirmedByTx;
+      }
+
+      state.confirmedSats = confirmedSats;
+      state.pendingSats   = pendingSats;
+      state.confs         = confs;
+
+      const complete = confirmedSats >= REQUIRED_SATS;
+      el.confirmedOut.textContent = confirmedSats.toString();
+      el.requiredOut.textContent  = REQUIRED_SATS.toString();
+      el.confsValue.textContent   = `${confs} / ${MIN_CONFIRMATIONS}`;
+      el.progressBar.style.width  = progressPct(confirmedSats, REQUIRED_SATS) + '%';
+      el.statusPane.classList.toggle('is-funded', complete);
+
+      el.steps.forEach((stepEl, i) => {
+        stepEl.classList.remove('active', 'done');
+        if (complete) stepEl.classList.add('done');
+        else if (i === 0 && (confirmedSats > 0n || pendingSats > 0n)) stepEl.classList.add('done');
+        else if (i === 1 && (confirmedSats > 0n || pendingSats > 0n)) stepEl.classList.add('active');
+        else if (i === 0) stepEl.classList.add('active');
+      });
+
+      if (complete) {
+        el.badge.className = 'status-badge success';
+        el.badge.textContent = '✓ Deposit confirmed';
+        el.title.textContent = 'Deposit confirmed';
+        el.sub.textContent = 'Your balance has been updated. Withdrawals are available.';
+        el.withdrawHint.textContent = 'Deposit confirmed — your balance is available to withdraw.';
+      } else if (pendingSats > 0n && confirmedSats === 0n) {
+        el.badge.className = 'status-badge pending';
+        el.badge.textContent = 'Pending';
+        el.title.textContent = 'Deposit detected — waiting for confirmation';
+        el.sub.textContent = `We see ${satsToBtcString(pendingSats)} BTC in the mempool.`;
+      } else if (confirmedSats > 0n) {
+        el.badge.className = 'status-badge pending';
+        el.badge.textContent = 'Confirming';
+        el.title.textContent = 'Deposit received';
+        el.sub.textContent = `${satsToBtcString(confirmedSats)} BTC confirmed.`;
+      } else {
+        el.badge.className = 'status-badge';
+        el.badge.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Waiting';
+        el.title.textContent = 'Waiting for your 1 BTC deposit';
+        el.sub.textContent = 'Send exactly 1 BTC to the deposit address. This panel is informational.';
+      }
+      el.error.classList.remove('show');
+    } catch (err) {
+      const msg = String(err && err.message || 'unknown');
+      let userMsg = 'Could not reach mempool.space. The deposit panel is informational only.';
+      if (msg === 'rate_limited') userMsg = 'Rate limited by mempool.space. Please wait a moment.';
+      if (msg === 'upstream') userMsg = 'mempool.space is temporarily unavailable.';
+      el.error.textContent = userMsg;
+      el.error.classList.add('show');
+    } finally {
+      state.isPolling = false;
+      el.refreshBtn.disabled = false;
+      el.lastChecked.textContent = new Date().toLocaleTimeString();
+    }
+  }
+
+  el.refreshBtn.addEventListener('click', evaluate);
+  el.explorerBtn.addEventListener('click', () => {
+    window.open(`https://mempool.space/address/${DEPOSIT_ADDRESS}`, '_blank', 'noopener');
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') evaluate();
+  });
+
+  el.pageTitleBtc.textContent = satsToBtcString(REQUIRED_SATS) + ' BTC';
+  el.requiredOut.textContent  = REQUIRED_SATS.toString();
+  el.confirmedOut.textContent = '0';
+
+  evaluate();
+  setInterval(evaluate, POLL_MS);
+})();
+</script>
+
+<!-- ============================================================
+     WITHDRAW CONTROLLER — same-origin API calls
+     ============================================================ -->
+<script>
+(function () {
+  'use strict';
+  if (location.protocol === 'file:') return;   // page not running
+
+  const ENDPOINT_BALANCE  = '/api/user/balance';
+  const ENDPOINT_WITHDRAW = '/api/withdraw/btc';
+  const MIN_AMOUNT_BTC    = 0.00000546;
+  const IDEMPOTENCY_RE    = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  const el = {
+    openBtn:   document.getElementById('openWithdrawBtn'),
+    modal:     document.getElementById('wdModal'),
+    formWrap:  document.getElementById('wdForm'),
+    success:   document.getElementById('wdSuccess'),
+    successId: document.getElementById('wdSuccessId'),
+    successAmt:document.getElementById('wdSuccessAmount'),
+    successFee:document.getElementById('wdSuccessFee'),
+    successTx: document.getElementById('wdSuccessTx'),
+    successRpl:document.getElementById('wdSuccessReplay'),
+    closeBtn:  document.getElementById('wdClose'),
+    cancelBtn: document.getElementById('wdCancel'),
+    doneBtn:   document.getElementById('wdDone'),
+    submitBtn: document.getElementById('wdSubmit'),
+    balanceWr: document.getElementById('wdBalanceWrap'),
+    address:   document.getElementById('wdAddress'),
+    amount:    document.getElementById('wdAmount'),
+    mfa:       document.getElementById('wdMfa'),
+    addressHint: document.getElementById('wdAddressHint'),
+    amountHint:  document.getElementById('wdAmountHint'),
+    mfaHint:     document.getElementById('wdMfaHint'),
+    error:     document.getElementById('wdError'),
+    idem:      document.getElementById('wdIdem'),
+  };
+
+  const state = {
+    availableBalance: null,
+    balanceStatus: 'idle',
+    idempotencyKey: newIdempotencyKey(),
+    submitting: false,
+  };
+
+  function newIdempotencyKey() {
+    if (window.crypto?.randomUUID) return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+  function validateAddress(addr) {
+    if (!addr) return false;
+    if (typeof window.BTCValidate === 'function') return window.BTCValidate(addr.trim());
+    const a = addr.trim();
+    return /^(bc1|tb1)[0-9a-z]{11,87}$/i.test(a) ||
+           /^[13mn2][1-9A-HJ-NP-Za-km-z]{25,34}$/.test(a);
+  }
+  function addressError(v) {
+    if (!v) return 'Destination address is required.';
+    return validateAddress(v) ? null : 'Not a valid Bitcoin address.';
+  }
+  function amountError(v) {
+    if (!v) return 'Amount is required.';
+    if (!/^\d+(\.\d{1,8})?$/.test(v)) return 'Up to 8 decimal places.';
+    const n = Number(v);
+    if (!(n > 0)) return 'Amount must be greater than zero.';
+    if (n < MIN_AMOUNT_BTC) return `Below dust threshold (${MIN_AMOUNT_BTC} BTC).`;
+    if (state.availableBalance !== null && n > Number(state.availableBalance)) {
+      return `Exceeds available balance (${state.availableBalance} BTC).`;
+    }
+    return null;
+  }
+  function mfaError(v) {
+    if (!v) return null;
+    return /^\d{6}$/.test(v) ? null : 'Enter the 6-digit code from your authenticator app.';
+  }
+  function hasBalance() {
+    return state.availableBalance !== null && Number(state.availableBalance) > 0;
+  }
+
+  function refreshUi() {
+    const aErr = el.address.value ? addressError(el.address.value) : null;
+    const mErr = el.amount.value  ? amountError(el.amount.value)   : null;
+    const fErr = el.mfa.value     ? mfaError(el.mfa.value)         : null;
+
+    el.address.classList.toggle('is-invalid', !!aErr);
+    el.address.classList.toggle('is-valid', !aErr && !!el.address.value);
+    el.amount.classList.toggle('is-invalid', !!mErr);
+    el.amount.classList.toggle('is-valid', !mErr && !!el.amount.value);
+    el.mfa.classList.toggle('is-invalid', !!fErr);
+    el.mfa.classList.toggle('is-valid', !fErr && el.mfa.value.length === 6);
+
+    el.addressHint.textContent = aErr || (el.address.value ? 'Address format looks valid.' : 'SegWit (bc1…) is recommended — lower fees.');
+    el.addressHint.className = 'wd-hint' + (aErr ? ' error' : (el.address.value ? ' ok' : ''));
+
+    el.amountHint.textContent = mErr || (state.availableBalance !== null ? `Available: ${state.availableBalance} BTC` : 'Enter the amount to withdraw.');
+    el.amountHint.className = 'wd-hint' + (mErr ? ' error' : '');
+
+    el.mfaHint.textContent = fErr || (el.mfa.value.length === 6 ? '6-digit code entered.' : 'Enter the 6-digit code from your authenticator app.');
+    el.mfaHint.className = 'wd-hint' + (fErr ? ' error' : (el.mfa.value.length === 6 ? ' ok' : ''));
+
+    const canSubmit =
+      !state.submitting &&
+      hasBalance() &&
+      state.balanceStatus === 'ready' &&
+      IDEMPOTENCY_RE.test(state.idempotencyKey) &&
+      !addressError(el.address.value) &&
+      !amountError(el.amount.value) &&
+      !mfaError(el.mfa.value) &&
+      el.address.value.length > 0 &&
+      el.amount.value.length > 0 &&
+      el.mfa.value.length === 6;
+
+    el.submitBtn.disabled = !canSubmit;
+    el.submitBtn.textContent = state.submitting ? 'Submitting…' : 'Confirm withdrawal';
+    el.cancelBtn.disabled = state.submitting;
+    el.closeBtn.disabled = state.submitting;
+  }
+
+  async function fetchBalance() {
+    state.balanceStatus = 'loading';
+    el.balanceWr.className = 'wd-balance';
+    el.balanceWr.innerHTML = 'Available: <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Loading…';
+    refreshUi();
+
+    let res, rawBody;
+    try {
+      res = await fetch(ENDPOINT_BALANCE, {
+        method: 'GET',
+        credentials: 'include',
+        headers: { 'Accept': 'application/json' },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(12000),
+      });
+      rawBody = await res.text();
+    } catch (err) {
+      console.error('[withdraw] balance fetch failed:', err);
+      showBalanceError(
+        'Could not reach /api/user/balance. Is the Express server running on this origin?',
+        true
+      );
+      return;
+    }
+
+    let data = {};
+    try { data = rawBody ? JSON.parse(rawBody) : {}; } catch {}
+
+    if (!res.ok) {
+      const map = {
+        401: 'Your session expired — please sign in again.',
+        403: 'You do not have permission to view this balance.',
+        404: `Balance endpoint not found at ${ENDPOINT_BALANCE}.`,
+        429: 'Too many balance checks — wait a moment.',
+        500: 'Server error while reading balance.',
+        502: 'Wallet provider unreachable.',
+        503: 'Balance service temporarily unavailable.',
+      };
+      showBalanceError(
+        (data && data.error) || map[res.status] || `Could not load balance (HTTP ${res.status}).`,
+        res.status === 429 || res.status >= 500
+      );
+      return;
+    }
+
+    const raw = data && (data.btcBalance ?? data.balance);
+    const balance = String(raw ?? '').trim();
+    if (!/^\d+(\.\d{1,8})?$/.test(balance)) {
+      showBalanceError(
+        `Balance response is malformed. Expected { "btcBalance": "0.12345678" }, got: ${rawBody.slice(0, 120)}`,
+        false
+      );
+      return;
+    }
+
+    state.availableBalance = balance;
+    state.balanceStatus = 'ready';
+    el.balanceWr.className = 'wd-balance';
+    el.balanceWr.innerHTML = `Available: <strong>${balance} BTC</strong>`;
+    refreshUi();
+  }
+
+  function showBalanceError(msg, retryable) {
+    state.availableBalance = null;
+    state.balanceStatus = 'error';
+    el.balanceWr.className = 'wd-balance error';
+    el.balanceWr.innerHTML = retryable
+      ? `${msg} <button type="button" class="wd-retry" id="wdRetryBalance">Retry</button>` : msg;
+    refreshUi();
+    if (retryable) {
+      const retry = document.getElementById('wdRetryBalance');
+      if (retry) retry.addEventListener('click', fetchBalance);
+    }
+  }
+
+  function openModal() {
+    el.success.hidden = true;
+    el.formWrap.hidden = false;
+    el.address.value = '';
+    el.amount.value = '';
+    el.mfa.value = '';
+    el.error.textContent = '';
+
+    state.idempotencyKey = newIdempotencyKey();
+    el.idem.textContent = state.idempotencyKey.slice(0, 8) + '…';
+    state.balanceStatus = 'idle';
+    state.availableBalance = null;
+
+    el.modal.classList.add('show');
+    el.modal.setAttribute('aria-hidden', 'false');
+    document.body.style.overflow = 'hidden';
+    refreshUi();
+    fetchBalance();
+    setTimeout(() => el.address.focus(), 100);
+  }
+  function closeModal() {
+    if (state.submitting) return;
+    el.modal.classList.remove('show');
+    el.modal.setAttribute('aria-hidden', 'true');
+    document.body.style.overflow = '';
+  }
+
+  async function submit() {
+    if (state.submitting) return;
+
+    if (!hasBalance()) {
+      el.error.textContent = 'You have no available balance to withdraw. Add funds first.';
+      refreshUi();
+      return;
+    }
+    if (!IDEMPOTENCY_RE.test(state.idempotencyKey)) {
+      state.idempotencyKey = newIdempotencyKey();
+      el.idem.textContent = state.idempotencyKey.slice(0, 8) + '…';
+      refreshUi();
+      return;
+    }
+    if (addressError(el.address.value) || amountError(el.amount.value) || mfaError(el.mfa.value)) {
+      refreshUi();
+      return;
+    }
+
+    state.submitting = true;
+    el.error.textContent = '';
+    refreshUi();
+
+    const payload = {
+      destination: el.address.value.trim(),
+      amountBtc:   el.amount.value,
+      mfaCode:     el.mfa.value,
+    };
+
+    let res, data;
+    try {
+      res = await fetch(ENDPOINT_WITHDRAW, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type':    'application/json',
+          'Accept':          'application/json',
+          'Idempotency-Key': state.idempotencyKey,
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(30000),
+      });
+      data = await res.json().catch(() => ({}));
+    } catch (err) {
+      console.error('[withdraw] submit failed:', err);
+      el.error.textContent = 'Could not reach the withdraw endpoint. Is Express running?';
+      state.submitting = false;
+      refreshUi();
+      return;
+    }
+
+    if (!res.ok) {
+      const code = data?.code || '';
+      const map = {
+        INVALID_MFA:          { msg: 'Invalid MFA code. Check your authenticator and try again.', newKey: false },
+        INSUFFICIENT_BALANCE: { msg: 'Insufficient balance — refresh and try again.', newKey: true  },
+        IDEMPOTENCY_CONFLICT: { msg: 'This withdrawal was already submitted.', newKey: true },
+        ACCOUNT_NOT_FUNDED:   { msg: 'Your account has no withdrawable balance. Add funds first.', newKey: false },
+        PROVIDER_FAILED:      { msg: 'The wallet provider rejected the transaction. Your balance has been refunded.', newKey: true },
+        PROVIDER_AMBIGUOUS:   { msg: 'Wallet provider state is unknown — the withdrawal will be reconciled automatically. Do NOT retry.', newKey: false },
+      };
+      const info = map[code] || {
+        msg: data?.error || `Server returned HTTP ${res.status}`,
+        newKey: res.status === 409,
+      };
+      el.error.textContent = info.msg;
+      if (info.newKey) {
+        state.idempotencyKey = newIdempotencyKey();
+        el.idem.textContent = state.idempotencyKey.slice(0, 8) + '…';
+      }
+      state.submitting = false;
+      refreshUi();
+      return;
+    }
+
+    el.successId.textContent  = data.withdrawalId   || '—';
+    el.successAmt.textContent = `${payload.amountBtc} BTC`;
+    el.successFee.textContent = data.feeBtc         || '—';
+    el.successTx.textContent  = data.providerTxId || data.fireblocksTxId || '—';
+    el.successRpl.hidden      = !data.replayed;
+    el.formWrap.hidden = true;
+    el.success.hidden  = false;
+    state.submitting = false;
+    refreshUi();
+    fetchBalance().catch(() => {});
+  }
+
+  el.openBtn.addEventListener('click', openModal);
+  el.closeBtn.addEventListener('click', closeModal);
+  el.cancelBtn.addEventListener('click', closeModal);
+  el.doneBtn.addEventListener('click', () => {
+    closeModal();
+    setTimeout(() => { el.success.hidden = true; el.formWrap.hidden = false; }, 250);
+  });
+  el.submitBtn.addEventListener('click', submit);
+
+  el.address.addEventListener('input', refreshUi);
+  el.amount.addEventListener('input', () => { el.amount.value = el.amount.value.replace(/[^\d.]/g, ''); refreshUi(); });
+  el.mfa.addEventListener('input', () => { el.mfa.value = el.mfa.value.replace(/\D/g, '').slice(0, 6); refreshUi(); });
+
+  el.modal.addEventListener('mousedown', (e) => { if (e.target === el.modal) closeModal(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && el.modal.classList.contains('show')) closeModal(); });
+})();
+</script>
+
+<!--
+  ============================================================================
+  HOW TO RUN
+  ----------------------------------------------------------------------------
+  1.  Save this file as: fund.js
+      (Yes — save it as .js, not .html. The first half is Node.js code that
+       starts an Express server. That server then serves the HTML below.)
+
+  2.  Install Express once:
+        npm install express
+
+  3.  Start the server:
+        node fund.js
+
+  4.  Open the correct URL in your browser:
+        http://localhost:3000/fund.html
+
+  The file you're reading right now is BOTH the server AND the page. The
+  Node.js code isn't in the file — because this is a pure HTML file. To
+  get the Express server, use the fund.js from the earlier answer.
+
+  ----------------------------------------------------------------------------
+  WHY YOU'RE SEEING A "file://" ERROR
+  ----------------------------------------------------------------------------
+  When you double-click this HTML file, the browser opens it as
+  file:///path/to/fund.js — and browsers block all network requests from
+  file:// URLs. That's the error you saw.
+
+  There is no HTML fix. You must run it as a Node.js server (fund.js) and
+  open http://localhost:3000/fund.html.
+
+  The warning banner you're currently seeing IS the fix — it explains
+  exactly what to do. Follow those four steps and the error goes away
+  permanently.
+  ============================================================================
+-->
+
+</body>
+</html>
